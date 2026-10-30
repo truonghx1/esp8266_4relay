@@ -58,6 +58,12 @@ Hoặc dùng Vercel CLI tại thư mục gốc: `vercel`, rồi `vercel --prod` 
 
 ## Kiểm tra
 
+Log exception 29 (`epc1=0x4000df64`, `excvaddr=0`) đã được đối chiếu với ELF của bản `v0007eb70`: nhánh hệ thống chạy `ieee80211_setup_ratetable`/`scan_parse_beacon` trong khi nhánh ứng dụng đang bắt tay TLS cho PATCH báo cáo sau GET. GET đã nhận và áp dụng lệnh web thành công. Đây không còn là lỗi đọc JSON; stack chỉ vào SDK Wi-Fi. Áp lực heap là nghi vấn từ log, chưa được chứng minh hoàn toàn trên phần cứng. Có [báo cáo cùng dấu hiệu trong SDK Espressif](https://github.com/espressif/ESP8266_NONOS_SDK/issues/320).
+
+Bản sửa tách GET, khởi tạo kênh và PATCH báo cáo sang các lượt loop khác nhau, mỗi lượt tối đa một HTTP request và cách nhau ít nhất 2 giây. Bộ đệm JSON được giải phóng trước handshake. Trước tạo TLS client, firmware yêu cầu heap trống ít nhất 32.000 byte và khối trống lớn nhất ít nhất 18.000 byte; nếu thiếu sẽ báo `TLS deferred: low heap` và giữ local hoạt động. Đây là ngưỡng dự phòng, không phải bảo đảm mọi lỗi SDK đã được loại bỏ. Log bổ sung `maxblock`; lỗi PATCH báo cáo không chặn việc đọc lệnh ở lượt sau. Khi có báo cáo/khởi tạo xen kẽ, chu kỳ đọc lệnh dài hơn 2 giây; UI xác nhận ESP cũng có thể chậm hơn một lượt.
+
+Chạy `node tests/run_firebase_sync_test.cjs` để test trực tiếp các hàm đồng bộ của firmware với HTTP giả lập: một request mỗi lượt, local ON → web OFF, khởi tạo kênh và lỗi báo cáo không chặn đọc lệnh.
+
 Sửa lỗi restart ở bản tối ưu TLS: không dùng `static X509List(FIREBASE_CA)` trong hàm. ESP8266 Core 3.1.2 khóa ngắt bằng `__cxa_guard_acquire` suốt constructor của static cục bộ; parse chứng chỉ ở đó có thể gây watchdog. Firmware chuẩn bị chứng chỉ một lần bằng `prepareFirebaseTls()` với ngắt hoạt động, rồi trả về loop trước khi mở HTTPS. Serial phải có `[net] TLS roots parse begin` và `[net] TLS roots ready`. Test `node tests/tls_init_test.cjs` kiểm tra binary đã compile để ngăn đưa lại static initializer này.
 
 Đã sửa lỗi chiều web → ESP: `FirebaseBody` phải khai báo `availableForWrite()` cho HTTPClient của ESP8266. Nếu thiếu, HTTP có thể trả 200 nhưng bộ nhận chờ timeout, JSON rỗng và lệnh không được áp dụng. Bản mới nhận theo block, giới hạn 4096 byte, trả lỗi khi đọc body thất bại thay vì coi HTTP 200 là thành công. Serial hiển thị method, đường dẫn, số byte và `Applied web relay N = 0/1` khi áp dụng một giá trị khác đầu ra hiện tại.

@@ -1,0 +1,10 @@
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const source = fs.readFileSync('firmware/esp8266_4relay/connectivity.h', 'utf8');
+const start = source.indexOf('bool buildFirebaseReport(');
+const end = source.indexOf('void serviceConnectivity()', start);
+if (start < 0 || end < 0) throw Error('Cannot locate firmware sync functions');
+fs.mkdirSync('build', { recursive: true });
+fs.writeFileSync('build/firebase_sync_under_test.h', source.slice(start, end));
+execFileSync('g++', ['-std=c++11', '-Wall', '-Wextra', '-I', '.tools/arduino-user/libraries/ArduinoJson/src', 'tests/firebase_sync_test.cpp', '-o', 'build/firebase_sync_test.exe'], { stdio: 'inherit' });
+execFileSync('./build/firebase_sync_test.exe', [], { stdio: 'inherit' });

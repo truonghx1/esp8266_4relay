@@ -303,7 +303,10 @@ void setup() {
   }
   Serial.begin(115200);
   Serial.println();
-  Serial.println(ESP.getResetReason());
+  Serial.printf("[boot] firmware built %s %s\n", __DATE__, __TIME__);
+  // Include the exception number and faulting addresses retained across reset.
+  // A reason-only message hides the information required to decode the crash.
+  Serial.println(ESP.getResetInfo());
   storageReady = LittleFS.begin();
   configHealthy = loadConfig();
   if (!configHealthy) Serial.println(F("Cannot load config; schedules are empty."));
