@@ -30,7 +30,7 @@ Database: `https://iot-thx-default-rtdb.asia-southeast1.firebasedatabase.app`
 - `relays/{1..4}`: giá trị điều khiển chính, **số** `0` = tắt, `1` = bật. Web PUT đúng một kênh; ESP PATCH các kênh vừa thay đổi do local/lịch, không ghi đè toàn bộ thiết bị.
 - `reported/{1..4}`: đầu ra GPIO mà firmware đã áp dụng; không phải cảm biến xác minh tiếp điểm relay.
 - `names`: tên được đặt từ local. `lastSeen`: timestamp máy chủ Firebase, cập nhật khi ESP đồng bộ thành công.
-- ESP và web polling khoảng 2 giây, cộng thời gian HTTPS. Đây là đồng bộ gần thời gian thực, không phải stream. Web đánh dấu ESP chưa phản hồi sau 20 giây.
+- ESP và web polling khoảng 2 giây, cộng thời gian HTTPS. ESP cập nhật `reported`/`names`/`lastSeen` khi có thay đổi hoặc mỗi 10 giây nếu không đổi. Chứng chỉ được parse một lần và TLS session được tái sử dụng khi máy chủ hỗ trợ. Đây là đồng bộ gần thời gian thực, không phải stream. Web đánh dấu ESP chưa phản hồi sau 20 giây.
 - Firebase thiếu kênh: ESP khởi tạo từng kênh bằng trạng thái hiện tại, với conditional PUT để tránh đè lệnh vừa đến từ web.
 - Sau mất mạng/khởi động lại, giá trị Firebase có sẵn được ưu tiên. Thay đổi local khi offline không được xếp hàng để ghi đè Firebase lúc kết nối lại. Khi online, thay đổi local/lịch được gửi trước lượt đọc tiếp theo. Nếu nhiều nguồn ghi cùng một kênh, lần ghi cuối tại Firebase thắng.
 - Lệnh cloud có cùng cách xử lý manual như lệnh local. Lịch vẫn có thể thay đổi trạng thái ở mốc tiếp theo. Đọc lại giá trị không đổi không reset manual.
@@ -57,6 +57,15 @@ HTTPS firmware xác minh chứng chỉ với GTS Root R1–R4 trong `firebase_ca
 Hoặc dùng Vercel CLI tại thư mục gốc: `vercel`, rồi `vercel --prod` khi muốn phát hành production. Không cần Firebase SDK/API key nếu Rules cho phép REST không đăng nhập. Wi-Fi phải cấu hình từ local, không nhập mật khẩu Wi-Fi trên web Vercel.
 
 ## Kiểm tra
+
+Đã sửa lỗi chiều web → ESP: `FirebaseBody` phải khai báo `availableForWrite()` cho HTTPClient của ESP8266. Nếu thiếu, HTTP có thể trả 200 nhưng bộ nhận chờ timeout, JSON rỗng và lệnh không được áp dụng. Bản mới nhận theo block, giới hạn 4096 byte, trả lỗi khi đọc body thất bại thay vì coi HTTP 200 là thành công. Serial hiển thị method, đường dẫn, số byte và `Applied web relay N = 0/1` khi áp dụng một giá trị khác đầu ra hiện tại.
+
+Test C++ dùng chính bộ nhận, parser Firebase và logic relay của firmware, kiểm tra object/array, local ON → web OFF, dữ liệu sai, giới hạn bộ nhớ và hết heap. Chạy với GCC cùng thư viện ArduinoJson 6 đã cài:
+
+```sh
+g++ -std=c++11 -Wall -Wextra -I .tools/arduino-user/libraries/ArduinoJson/src tests/firebase_transport_test.cpp -o build/firebase_transport_test.exe
+./build/firebase_transport_test.exe
+```
 
 ```sh
 node tests/ui_test.cjs

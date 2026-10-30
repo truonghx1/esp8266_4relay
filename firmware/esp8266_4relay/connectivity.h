@@ -1,26 +1,16 @@
 #pragma once
+#include "firebase_body.h"
+#include "firebase_relays.h"
 
 bool wifiStartPending = false;
 uint32_t wifiStartQueuedAt = 0;
+String lastFirebaseReport;
+uint32_t lastFirebaseReportAt = 0;
 
 void connectivityTrace(const char* stage) {
   Serial.printf("[net] %s; heap=%u; stack=%u\n", stage,
                 ESP.getFreeHeap(), ESP.getFreeContStack());
 }
-
-class FirebaseBody : public Stream {
- public:
-  String body;
-  bool overflow = false;
-  size_t write(uint8_t c) override {
-    if (body.length() >= 4096) { overflow = true; return 0; }
-    body += static_cast<char>(c); return 1;
-  }
-  int available() override { return 0; }
-  int read() override { return -1; }
-  int peek() override { return -1; }
-  void flush() override {}
-};
 
 // Included after the existing local API helpers; schedules/config keep their format.
 void beginWifi() {
@@ -95,10 +85,13 @@ void handleWifi() {
 
 int firebaseRequest(const String& path, const char* method, const String& body,
                     String& response, bool createOnly = false) {
-  BearSSL::X509List roots(FIREBASE_CA);
+  // Parse roots once and let successive requests resume TLS sessions when supported.
+  static BearSSL::X509List roots(FIREBASE_CA);
+  static BearSSL::Session session;
   // Trust anchors must outlive the TLS client, including its destructor.
   BearSSL::WiFiClientSecure client;
   client.setTrustAnchors(&roots);
+  client.setSession(&session);
   client.setTimeout(2500);
   HTTPClient http;
   String url = String(DATABASE_URL) + DEVICE_PATH + path + ".json";
@@ -110,15 +103,23 @@ int firebaseRequest(const String& path, const char* method, const String& body,
   if (createOnly) http.addHeader("if-match", "null_etag");
   connectivityTrace("Firebase HTTPS request");
   yield();
-  const int code = http.sendRequest(method, body);
+  int code = http.sendRequest(method, body);
   // Only consume our bounded schema; avoid allocating an arbitrary remote body.
   FirebaseBody received;
+  response = "";
   if (code > 0 && http.getSize() <= 4096) {
     const int written = http.writeToStream(&received);
-    response = written >= 0 && !received.overflow ? received.body : "";
-  } else response = "";
+    const bool unboundedFull = http.getSize() < 0 && received.body.length() == FirebaseBody::LIMIT;
+    if (written < 0 || received.overflow || received.allocationFailed || unboundedFull) {
+      // A 200 header alone is not a successful read of the response body.
+      Serial.printf("[net] Firebase body read failed: %d\n", written);
+      if (code >= 200 && code < 300)
+        code = written < 0 ? written : HTTPC_ERROR_STREAM_WRITE;
+    } else response = received.body;
+  } else if (code >= 200 && code < 300) code = HTTPC_ERROR_STREAM_WRITE;
   http.end();
-  Serial.printf("[net] Firebase HTTP %d\n", code);
+  Serial.printf("[net] Firebase %s %s: HTTP/result=%d, bytes=%u\n",
+                method, path.c_str(), code, response.length());
   yield();
   return code;
 }
@@ -145,14 +146,14 @@ void syncFirebase() {
   }
   if (!firebaseOK(firebaseRequest("/relays", "GET", "", response))) return;
   DynamicJsonDocument doc(512);
+  uint8_t desired = 0, missing = 0;
   if (response.length() == 0 || deserializeJson(doc, response) ||
-      !(doc.isNull() || doc.is<JsonObject>() || doc.is<JsonArray>())) {
+      !readFirebaseRelays(doc.as<JsonVariantConst>(), desired, missing)) {
     firebaseStatus = "Dữ liệu Firebase không hợp lệ"; return;
   }
   // Firebase may encode numeric keys as an array (index zero is unused).
   for (uint8_t i = 0; i < RELAY_COUNT; ++i) {
-    JsonVariantConst value = doc.is<JsonArray>() ? doc[i + 1].as<JsonVariantConst>() : doc[String(i + 1)].as<JsonVariantConst>();
-    if (value.isNull()) {
+    if (missing & (1U << i)) {
       // Conditional create cannot overwrite a simultaneous command from the web.
       int code = firebaseRequest("/relays/" + String(i + 1), "PUT",
                                  String((relayLogic.output() >> i) & 1U), response, true);
@@ -160,12 +161,14 @@ void syncFirebase() {
       firebaseStatus = "Đang khởi tạo kênh";
       return;
     }
-    if (!integerIn(value, 0, 1)) { firebaseStatus = "Kênh Firebase phải là số 0 hoặc 1"; return; }
   }
   cloudApplying = true;
   for (uint8_t i = 0; i < RELAY_COUNT; ++i) {
-    const int value = doc.is<JsonArray>() ? doc[i + 1].as<int>() : doc[String(i + 1)].as<int>();
-    if (value != ((relayLogic.output() >> i) & 1U)) relayLogic.setManual(i, value == 1);
+    const int value = (desired >> i) & 1U;
+    if (value != ((relayLogic.output() >> i) & 1U)) {
+      relayLogic.setManual(i, value == 1);
+      Serial.printf("[net] Applied web relay %u = %d\n", i + 1, value);
+    }
   }
   updateRelays();
   cloudApplying = false;
@@ -174,10 +177,23 @@ void syncFirebase() {
     report["reported"][String(i + 1)] = (relayLogic.output() >> i) & 1U;
     report["names"][String(i + 1)] = relayNames[i];
   }
-  report["lastSeen"][".sv"] = "timestamp";
   if (report.overflowed()) { firebaseStatus = "Không đủ bộ nhớ Firebase"; return; }
   serializeJson(report, body);
-  if (firebaseOK(firebaseRequest("", "PATCH", body, response))) firebaseStatus = "Đã đồng bộ Firebase";
+  // Poll commands every cycle, but publish unchanged telemetry only every 10 s.
+  if (body == lastFirebaseReport && millis() - lastFirebaseReportAt < 10000) {
+    firebaseStatus = "Đã đồng bộ Firebase";
+    return;
+  }
+  const String signature = body;
+  report["lastSeen"][".sv"] = "timestamp";
+  if (report.overflowed()) { firebaseStatus = "Không đủ bộ nhớ Firebase"; return; }
+  body = ""; // ArduinoJson appends when serializing to an existing String.
+  serializeJson(report, body);
+  if (firebaseOK(firebaseRequest("", "PATCH", body, response))) {
+    lastFirebaseReport = signature;
+    lastFirebaseReportAt = millis();
+    firebaseStatus = "Đã đồng bộ Firebase";
+  }
 }
 
 void serviceConnectivity() {
@@ -211,6 +227,7 @@ void serviceConnectivity() {
   if (!wifiWasConnected) {
     wifiWasConnected = true; wifiConnecting = false; cloudDirty = 0;
     wifiStatus = "Đã kết nối";
+    lastFirebaseReport = ""; // Force a fresh acknowledgement after reconnect.
     connectivityTrace("Router connected; starting NTP");
     configTime(0, 0, "time.google.com", "pool.ntp.org");
     cloudAttemptAt = now;
