@@ -1,0 +1,22 @@
+<style>
+.sim-panel{margin-top:22px;padding:12px;background:#f0f5fc;border:1px dashed #cad9ed;border-radius:11px;color:#607998}.sim-panel>summary{cursor:pointer;font-size:11px;font-weight:650}.sim-panel .muted{margin-top:10px}.sim-panel label{min-width:0}.sim-panel .actions button{background:#fff;font-size:11px}.sim-panel .note{font-size:11px}
+</style>
+<details class="sim-panel" aria-label="Công cụ thử nghiệm">
+  <summary>MÔ PHỎNG · Công cụ thử nghiệm</summary>
+  <p class="muted">Giao diện thật của firmware, relay và bộ nhớ được mô phỏng trên máy tính.</p>
+  <div class="actions">
+    <button type="button" data-sim-advance="60">+1 phút</button>
+    <button type="button" data-sim-advance="3600">+1 giờ</button>
+    <button type="button" data-sim-advance="86400">+1 ngày</button>
+    <button type="button" id="sim-real">Lấy giờ thật</button>
+    <button type="button" id="sim-reboot">Mô phỏng mất điện</button>
+  </div>
+  <details style="margin-top:12px"><summary>Đặt ngày giờ để thử lịch</summary>
+    <form id="sim-time-form" class="actions">
+      <label>Giờ địa phương <input id="sim-date" type="datetime-local" min="2024-01-01T00:00" max="2099-12-31T23:59" required style="max-width:100%;min-height:44px"></label>
+      <button type="submit">Áp dụng giờ thử</button>
+    </form>
+    <p class="note">Dùng múi giờ của trình duyệt. Ví dụ đặt Chủ nhật 21:59, tạo lịch 22:00 → 02:00 rồi bấm +1 phút.</p>
+  </details>
+  <p id="sim-status" class="note" role="status">Đang khởi động mô phỏng…</p>
+</details>

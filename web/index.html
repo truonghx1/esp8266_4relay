@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#1769db"><title>Nhà của bạn · 4 Relay</title><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head>
+<body><main><header><div class="brand">⌂ <span>NHÀ CỦA BẠN</span></div><span class="badge">ESP8266 · 4 KÊNH</span></header>
+<section class="intro"><p class="eyebrow">ĐIỀU KHIỂN TỪ XA</p><h1>Một chạm,<br>kết nối ngôi nhà.</h1><p>Bật và tắt các thiết bị qua Firebase, ở bất cứ đâu.</p></section>
+<section class="connection" aria-live="polite"><span id="dot" class="dot"></span><div><strong id="status">Đang kết nối Firebase…</strong><p id="deviceStatus">Đang kiểm tra thiết bị</p></div><button id="retry" type="button">Làm mới</button></section>
+<p id="error" class="error" role="alert" hidden></p><section id="relays" class="grid" aria-label="Điều khiển 4 kênh"></section>
+<section class="help"><h2>Trạng thái luôn rõ ràng</h2><p>Công tắc hiển thị giá trị đã lưu trên Firebase. Dòng bên dưới cho biết ESP đã áp dụng hay đang chờ nhận lệnh. Khi ESP mất mạng, lệnh được giữ để áp dụng lúc kết nối lại.</p></section>
+<details><summary>Cấu hình quyền truy cập</summary><p>Nếu database yêu cầu đăng nhập, nhập Firebase ID token hợp lệ. Token chỉ giữ trong bộ nhớ tab và cần nhập lại khi hết hạn.</p><form id="authForm"><label for="token">Firebase ID token</label><input id="token" type="password" autocomplete="off" placeholder="Bỏ trống nếu rules cho phép"><button type="submit">Kết nối lại</button></form></details>
+<footer>4 Relay Control <span>Đồng bộ tự động · 2 giây</span></footer></main></body></html>

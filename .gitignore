@@ -1,0 +1,6 @@
+.pio/
+.tools/
+build/
+.vscode/
+*.exe
+.simulator/

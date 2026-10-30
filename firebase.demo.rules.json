@@ -1,0 +1,28 @@
+{
+  "rules": {
+    "devices": {
+      "esp8266_4relay": {
+        ".read": true,
+        "relays": {
+          ".write": "newData.exists()",
+          "$channel": {
+            ".validate": "$channel.matches(/^[1-4]$/) && newData.isNumber() && (newData.val() === 0 || newData.val() === 1)"
+          }
+        },
+        "reported": {
+          ".write": "newData.exists()",
+          "$channel": {
+            ".validate": "$channel.matches(/^[1-4]$/) && newData.isNumber() && (newData.val() === 0 || newData.val() === 1)"
+          }
+        },
+        "names": {
+          ".write": "newData.exists()",
+          "$channel": {
+            ".validate": "$channel.matches(/^[1-4]$/) && newData.isString() && newData.val().length > 0 && newData.val().length <= 48"
+          }
+        },
+        "lastSeen": { ".write": "newData.exists()", ".validate": "newData.isNumber()" }
+      }
+    }
+  }
+}
