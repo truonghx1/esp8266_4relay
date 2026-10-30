@@ -1,5 +1,13 @@
 #pragma once
 
+bool wifiStartPending = false;
+uint32_t wifiStartQueuedAt = 0;
+
+void connectivityTrace(const char* stage) {
+  Serial.printf("[net] %s; heap=%u; stack=%u\n", stage,
+                ESP.getFreeHeap(), ESP.getFreeContStack());
+}
+
 class FirebaseBody : public Stream {
  public:
   String body;
@@ -16,10 +24,12 @@ class FirebaseBody : public Stream {
 
 // Included after the existing local API helpers; schedules/config keep their format.
 void beginWifi() {
+  connectivityTrace("Wi-Fi begin");
   WiFi.mode(WIFI_AP_STA);
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(false);
   WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+  connectivityTrace("Wi-Fi begin returned");
   wifiAttemptAt = millis();
   wifiConnecting = true;
   wifiWasConnected = false;
@@ -46,7 +56,8 @@ void loadWifi() {
 }
 
 void handleWifi() {
-  StaticJsonDocument<384> doc;
+  // HTTP parsing/server frames already occupy the ESP8266's small task stack.
+  DynamicJsonDocument doc(384);
   if (!readBody(doc)) return;
   if (!doc["ssid"].is<String>() || !doc["password"].is<String>()) {
     jsonError(400, "Nhập tên Wi-Fi và mật khẩu."); return;
@@ -60,8 +71,10 @@ void handleWifi() {
   }
   if (!storageReady) { jsonError(507, "Không lưu được cấu hình Wi-Fi."); return; }
   // Store only credentials, never echo the password through /api/state.
-  StaticJsonDocument<384> saved;
+  DynamicJsonDocument saved(384);
   saved["ssid"] = ssid; saved["password"] = password;
+  if (saved.overflowed()) { jsonError(503, "Không đủ bộ nhớ để lưu Wi-Fi."); return; }
+  connectivityTrace("Saving Wi-Fi");
   File file = LittleFS.open("/wifi.tmp", "w");
   if (!file) { jsonError(507, "Không lưu được Wi-Fi."); return; }
   const size_t written = serializeJson(saved, file);
@@ -72,16 +85,19 @@ void handleWifi() {
     LittleFS.remove("/wifi.tmp"); jsonError(507, "Không lưu được Wi-Fi."); return;
   }
   wifiSsid = ssid; wifiPassword = password;
-  // Reply before moving the AP radio to the router's channel.
+  connectivityTrace("Wi-Fi saved");
+  // Finish this HTTP handler and release its stack before touching the radio.
+  wifiStartPending = true;
+  wifiStartQueuedAt = millis();
   wifiStatus = "Đang kết nối";
   sendState();
-  beginWifi();
 }
 
 int firebaseRequest(const String& path, const char* method, const String& body,
                     String& response, bool createOnly = false) {
-  BearSSL::WiFiClientSecure client;
   BearSSL::X509List roots(FIREBASE_CA);
+  // Trust anchors must outlive the TLS client, including its destructor.
+  BearSSL::WiFiClientSecure client;
   client.setTrustAnchors(&roots);
   client.setTimeout(2500);
   HTTPClient http;
@@ -92,6 +108,8 @@ int firebaseRequest(const String& path, const char* method, const String& body,
   if (!http.begin(client, url)) return -1;
   http.addHeader("Content-Type", "application/json");
   if (createOnly) http.addHeader("if-match", "null_etag");
+  connectivityTrace("Firebase HTTPS request");
+  yield();
   const int code = http.sendRequest(method, body);
   // Only consume our bounded schema; avoid allocating an arbitrary remote body.
   FirebaseBody received;
@@ -100,6 +118,8 @@ int firebaseRequest(const String& path, const char* method, const String& body,
     response = written >= 0 && !received.overflow ? received.body : "";
   } else response = "";
   http.end();
+  Serial.printf("[net] Firebase HTTP %d\n", code);
+  yield();
   return code;
 }
 
@@ -113,9 +133,10 @@ bool firebaseOK(int code) {
 void syncFirebase() {
   String response, body;
   if (cloudDirty) {
-    StaticJsonDocument<192> changes;
+    DynamicJsonDocument changes(192);
     for (uint8_t i = 0; i < RELAY_COUNT; ++i)
       if (cloudDirty & (1U << i)) changes[String(i + 1)] = (relayLogic.output() >> i) & 1U;
+    if (changes.overflowed()) { firebaseStatus = "Không đủ bộ nhớ Firebase"; return; }
     serializeJson(changes, body);
     if (!firebaseOK(firebaseRequest("/relays", "PATCH", body, response))) return;
     cloudDirty = 0;
@@ -123,7 +144,7 @@ void syncFirebase() {
     return;
   }
   if (!firebaseOK(firebaseRequest("/relays", "GET", "", response))) return;
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(512);
   if (response.length() == 0 || deserializeJson(doc, response) ||
       !(doc.isNull() || doc.is<JsonObject>() || doc.is<JsonArray>())) {
     firebaseStatus = "Dữ liệu Firebase không hợp lệ"; return;
@@ -148,18 +169,25 @@ void syncFirebase() {
   }
   updateRelays();
   cloudApplying = false;
-  StaticJsonDocument<1024> report;
+  DynamicJsonDocument report(1024);
   for (uint8_t i = 0; i < RELAY_COUNT; ++i) {
     report["reported"][String(i + 1)] = (relayLogic.output() >> i) & 1U;
     report["names"][String(i + 1)] = relayNames[i];
   }
   report["lastSeen"][".sv"] = "timestamp";
+  if (report.overflowed()) { firebaseStatus = "Không đủ bộ nhớ Firebase"; return; }
   serializeJson(report, body);
   if (firebaseOK(firebaseRequest("", "PATCH", body, response))) firebaseStatus = "Đã đồng bộ Firebase";
 }
 
 void serviceConnectivity() {
   const uint32_t now = millis();
+  if (wifiStartPending) {
+    if (now - wifiStartQueuedAt < 500) return;
+    wifiStartPending = false;
+    beginWifi();
+    return;
+  }
   if (WiFi.status() != WL_CONNECTED) {
     if (wifiWasConnected) {
       wifiWasConnected = false; cloudDirty = 0; wifiAttemptAt = now;
@@ -183,8 +211,10 @@ void serviceConnectivity() {
   if (!wifiWasConnected) {
     wifiWasConnected = true; wifiConnecting = false; cloudDirty = 0;
     wifiStatus = "Đã kết nối";
+    connectivityTrace("Router connected; starting NTP");
     configTime(0, 0, "time.google.com", "pool.ntp.org");
-    cloudAttemptAt = now - FIREBASE_POLL_MS;
+    cloudAttemptAt = now;
+    return; // Serve local requests before starting HTTPS in a later loop.
   }
   // Certificate verification needs wall time; never disable TLS verification.
   const time_t epoch = time(nullptr);

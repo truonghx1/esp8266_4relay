@@ -10,6 +10,8 @@ Khởi động ở chế độ AP-only, chờ 30 giây trước khi thử Wi-Fi 
 
 Nếu thấy SSID nhưng không nối được: chọn **Quên mạng**, kết nối lại `ESP8266-4Relay` bằng mật khẩu **12345678** theo `config.h` (không dùng mật khẩu `relay1234` trong tài liệu cũ). Nếu điện thoại báo không có Internet, chọn giữ kết nối. Mở Serial Monitor 115200 baud: kiểm tra `configuration: OK, started: OK`, địa chỉ AP, thông báo `Local Wi-Fi: client joined/disconnected` và lý do reset. Sau khi sửa firmware phải nạp lại board; chỉ sửa `config.h` trên máy không thay đổi mật khẩu của firmware đang chạy.
 
+Nếu watchdog reset sau **Lưu & kết nối**, nạp binary mới: thao tác nối router được xếp hàng để chạy sau khi HTTP handler kết thúc (chờ 500 ms); các bộ đệm JSON của lưu Wi-Fi và đồng bộ Firebase dùng heap để giảm stack. Serial in các mốc `[net] Saving Wi-Fi`, `Wi-Fi saved`, `Wi-Fi begin`, `Wi-Fi begin returned`, `Router connected; starting NTP`, `Firebase HTTPS request` và mã HTTP. Mỗi mốc ghi lượng heap/stack còn trống, không ghi mật khẩu. Nếu vẫn reset, lưu log từ lúc bấm nút đến hết phần crash, đặc biệt mốc `[net]` cuối cùng. Build/test trên máy chưa xác nhận hết lỗi trên phần cứng; không tắt watchdog để che lỗi.
+
 ## 2. Cấu trúc dữ liệu chung
 
 Database: `https://iot-thx-default-rtdb.asia-southeast1.firebasedatabase.app`
