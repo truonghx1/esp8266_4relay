@@ -1,6 +1,7 @@
 #pragma once
 #include "firebase_body.h"
 #include "firebase_relays.h"
+#include "wifi_credentials.h"
 #include <memory>
 #include <new>
 
@@ -56,8 +57,8 @@ void loadWifi() {
   if (!storageReady || !LittleFS.exists("/wifi.json")) return;
   File file = LittleFS.open("/wifi.json", "r");
   StaticJsonDocument<384> doc;
-  if (!file || file.size() > 384 || deserializeJson(doc, file)) return;
-  if (!doc["ssid"].is<String>() || !doc["password"].is<String>()) return;
+  if (!file || file.size() > WIFI_FILE_LIMIT || deserializeJson(doc, file)) return;
+  if (!validWifiCredentials(doc["ssid"], doc["password"])) return;
   wifiSsid = doc["ssid"].as<String>();
   wifiPassword = doc["password"].as<String>();
   if (wifiSsid.length() && wifiSsid.length() <= 32 && wifiPassword.length() <= 63) {
@@ -77,10 +78,7 @@ void handleWifi() {
     jsonError(400, "Nhập tên Wi-Fi và mật khẩu."); return;
   }
   const String ssid = doc["ssid"].as<String>(), password = doc["password"].as<String>();
-  if (ssid.length() < 1 || ssid.length() > 32 || password.length() > 63 ||
-      (password.length() > 0 && password.length() < 8) ||
-      strlen(doc["ssid"].as<const char*>()) != doc["ssid"].as<JsonString>().size() ||
-      strlen(doc["password"].as<const char*>()) != doc["password"].as<JsonString>().size()) {
+  if (!validWifiCredentials(doc["ssid"], doc["password"])) {
     jsonError(400, "SSID 1–32 byte; mật khẩu 8–63 byte, hoặc để trống cho mạng mở."); return;
   }
   if (!storageReady) { jsonError(507, "Không lưu được cấu hình Wi-Fi."); return; }
@@ -172,6 +170,7 @@ bool buildFirebaseReport(String& body, String& signature) {
   }
   if (report.overflowed()) return false;
   serializeJson(report, signature);
+  if (signature.length() != measureJson(report)) return false;
   report["lastSeen"][".sv"] = "timestamp";
   if (report.overflowed()) return false;
   serializeJson(report, body);
@@ -188,6 +187,9 @@ void syncFirebase() {
         if (cloudDirty & (1U << i)) changes[String(i + 1)] = (relayLogic.output() >> i) & 1U;
       if (changes.overflowed()) { firebaseStatus = "Không đủ bộ nhớ Firebase"; return; }
       serializeJson(changes, body);
+      if (body.length() != measureJson(changes)) {
+        firebaseStatus = "Không đủ bộ nhớ gửi thay đổi Firebase"; return;
+      }
     } // Release JSON before connecting.
     if (!firebaseOK(firebaseRequest("/relays", "PATCH", body, response))) return;
     cloudDirty = 0;
@@ -196,9 +198,12 @@ void syncFirebase() {
   }
   if (firebaseMissingChannel) {
     const uint8_t id = firebaseMissingChannel;
+    // Re-read after every attempt, even if creation is denied or the network
+    // fails. Retrying this write forever would starve all incoming commands.
+    firebaseMissingChannel = 0;
     int code = firebaseRequest("/relays/" + String(id), "PUT",
                                String((relayLogic.output() >> (id - 1)) & 1U), response, true);
-    if (code == 412 || firebaseOK(code)) firebaseMissingChannel = 0;
+    if (code != 412) firebaseOK(code);
     return;
   }
   if (firebaseReportPending) {
@@ -221,6 +226,10 @@ void syncFirebase() {
     return;
   }
   if (!firebaseOK(firebaseRequest("/relays", "GET", "", response))) return;
+  // A TLS request can cross a schedule boundary while the main loop is
+  // blocked. Publish that newer local state before applying this older read.
+  updateRelays();
+  if (cloudDirty) return;
   uint8_t desired = 0, missing = 0;
   {
     DynamicJsonDocument doc(512);
@@ -235,11 +244,12 @@ void syncFirebase() {
       // Conditional create cannot overwrite a simultaneous command from the web.
       firebaseMissingChannel = i + 1;
       firebaseStatus = "Đang khởi tạo kênh";
-      return;
+      break;
     }
   }
   cloudApplying = true;
   for (uint8_t i = 0; i < RELAY_COUNT; ++i) {
+    if (missing & (1U << i)) continue;
     const int value = (desired >> i) & 1U;
     if (value != static_cast<int>((relayLogic.output() >> i) & 1U)) {
       relayLogic.setManual(i, value == 1);
@@ -269,19 +279,18 @@ void serviceConnectivity() {
     if (wifiWasConnected) {
       wifiWasConnected = false; cloudDirty = 0; wifiAttemptAt = now;
       WiFi.disconnect(true); // Disable STA only; keep the local AP available.
+      wifiStatus = "Mất Wi-Fi; sẽ tự kết nối lại sau 30 giây";
+      connectivityTrace("Router disconnected; retry in 30 s");
     }
     firebaseStatus = "Chưa kết nối Wi-Fi — chỉ dùng local";
     if (wifiConnecting && now - wifiAttemptAt >= 20000) {
       wifiConnecting = false; WiFi.disconnect(true);
       wifiStatus = "Không kết nối được; kiểm tra SSID/mật khẩu. Sẽ thử lại.";
+      connectivityTrace("Wi-Fi attempt timed out; retry pending");
     } else if (!wifiConnecting && wifiSsid.length()) {
-      // Do not scan/change channels underneath a phone using the local AP.
-      // Explicit submission of /api/wifi still connects immediately.
-      if (WiFi.softAPgetStationNum() > 0) {
-        wifiAttemptAt = now;
-        wifiStatus = "Đang dùng local; kết nối Wi-Fi nhà khi lưu hoặc rời AP";
-      } else if (now - wifiAttemptAt >= 30000) beginWifi();
-      else if (wifiStatus == "Đã kết nối") wifiStatus = "Mất Wi-Fi; đang chờ thử lại";
+      // AP clients must not reset this timer: phones often stay associated
+      // indefinitely, which otherwise prevents all automatic STA reconnects.
+      if (now - wifiAttemptAt >= 30000) beginWifi();
     }
     return;
   }
@@ -299,7 +308,14 @@ void serviceConnectivity() {
   // Certificate verification needs wall time; never disable TLS verification.
   const time_t epoch = time(nullptr);
   if (epoch < 1704067200) { firebaseStatus = "Đang chờ giờ Internet để xác minh TLS"; return; }
-  if (!deviceClock.valid()) { deviceClock.sync(static_cast<uint64_t>(epoch), now); updateRelays(true); }
+  if (!deviceClock.valid()) {
+    deviceClock.sync(static_cast<uint64_t>(epoch), now);
+    // Initial clock recovery must not overwrite saved cloud commands before
+    // their first read. Later schedule transitions remain normal local writes.
+    cloudApplying = true;
+    updateRelays(true);
+    cloudApplying = false;
+  }
   if (now - cloudAttemptAt < FIREBASE_POLL_MS) return;
   if (!firebaseRoots) {
     // Parse outside HTTP/JSON call frames, with interrupts enabled. Always give

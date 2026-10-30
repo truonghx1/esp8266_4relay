@@ -63,7 +63,7 @@ function element(tag,text,className){const el=document.createElement(tag);if(tex
 
 const shortDays=['T2','T3','T4','T5','T6','T7','Chủ nhật'];
 const channelIcons=['bulb','fan','outlet','lamp'];
-let page='home',openMenu=-1,messageTimer,namesDirty=false,lastScheduleRender='';
+let page='home',openMenu=-1,messageTimer,namesDirty=false,lastScheduleRender='',lastRelayRender='';
 function icon(name,className=''){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class','icon '+className);svg.setAttribute('aria-hidden','true');const use=document.createElementNS('http://www.w3.org/2000/svg','use');use.setAttribute('href','#i-'+name);svg.append(use);return svg;}
 function relayName(id){return state?.relays.find(relay=>relay.id===id)?.name||'Kênh '+id;}
 function channelIcon(id){const el=element('span',undefined,'channel-icon kind-'+id);el.append(icon(channelIcons[id-1]));return el;}
@@ -76,10 +76,18 @@ function lock(){$('connectWifi').disabled=busy||requesting||!online||!state?.wif
 async function api(path,data){
  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),8000);
  try{const response=await fetch(path,{method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),signal:controller.signal});const result=await response.json();if(!response.ok)throw new Error(result.error||'Yêu cầu thất bại.');return result;}
- catch(error){if(error.name==='AbortError'||error instanceof TypeError){connection(false);throw new Error('Không nhận được phản hồi. Hãy kiểm tra Wi-Fi ESP8266 và tải lại trạng thái trước khi thử lại.');}throw error;}
+ catch(error){if(error.name==='AbortError'||error instanceof TypeError||error instanceof SyntaxError){connection(false);throw new Error('Không nhận được phản hồi hợp lệ. Hãy kiểm tra Wi-Fi ESP8266 và tải lại trạng thái trước khi thử lại.');}throw error;}
  finally{clearTimeout(timer);}
 }
-function accept(next){state=next;clockAt=performance.now();connection(true);render();}
+function accept(next){
+ const integer=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
+ const valid=next&&typeof next.timeValid==='boolean'&&Number.isFinite(next.epoch)&&next.epoch>=0&&integer(next.utcOffsetMinutes,-720,840)&&
+  typeof next.storageReady==='boolean'&&typeof next.configHealthy==='boolean'&&Array.isArray(next.relays)&&next.relays.length===4&&
+  next.relays.every(r=>r&&integer(r.id,1,4)&&typeof r.on==='boolean')&&new Set(next.relays.map(r=>r.id)).size===4&&
+  Array.isArray(next.schedules)&&next.schedules.length<=10&&next.schedules.every(s=>s&&integer(s.id,0,9)&&typeof s.enabled==='boolean'&&integer(s.relays,1,15)&&integer(s.days,1,127)&&integer(s.start,0,1439)&&integer(s.end,0,1439)&&s.start!==s.end)&&new Set(next.schedules.map(s=>s.id)).size===next.schedules.length;
+ if(!valid){connection(false);throw new Error('Trạng thái thiết bị không hợp lệ. Hãy tải lại trạng thái trước khi điều khiển.');}
+ state=next;clockAt=performance.now();connection(true);render();
+}
 async function mutate(path,data,success){
  if(busy||requesting)return false;busy=true;lock();
  try{accept(await api(path,data));if(success)message(success);return true;}
@@ -95,6 +103,9 @@ function paintClock(){
  $('date').textContent=dayNames[(d.getUTCDay()+6)%7]+', '+pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()+' · '+zone+(online?'':' · Ước tính');
 }
 function renderRelays(){
+ const signature=JSON.stringify(state.relays);
+ if(signature===lastRelayRender)return;
+ lastRelayRender=signature;
  $('relays').replaceChildren();
  state.relays.forEach(r=>{
   const card=element('article',undefined,'relay'+(r.on?' on':''));card.setAttribute('aria-label',relayName(r.id));
@@ -165,7 +176,7 @@ async function syncTime(silent=false){
 $('sync').onclick=()=>syncTime();
 async function refresh(){
  if(document.hidden||busy||requesting)return;requesting=true;lock();
- try{accept(await api('/api/state'));}catch(error){message(error.message,true);}finally{requesting=false;lock();}
+ try{accept(await api('/api/state'));}catch(error){connection(false);message(error.message,true);}finally{requesting=false;lock();}
  if(state&&online&&(!state.timeValid||Date.now()-lastSync>300000))await syncTime(true);
 }
 

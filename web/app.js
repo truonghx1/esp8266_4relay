@@ -2,7 +2,7 @@
 const DATABASE_URL = 'https://iot-thx-default-rtdb.asia-southeast1.firebasedatabase.app';
 const DEVICE_PATH = '/devices/esp8266_4relay';
 const $ = id => document.getElementById(id);
-let authToken = '', state = null, connected = false, busy = false;
+let authToken = '', pendingAuthToken = null, state = null, connected = false, busy = false;
 const cards = [1, 2, 3, 4].map(id => {
   const card = document.createElement('article'); card.className = 'relay';
   card.innerHTML = `<span class="channel">KÊNH 0${id}</span><h2></h2><div class="value">Chưa có dữ liệu</div><button class="switch" type="button" role="switch" aria-checked="false" disabled></button><p class="reported">Chờ kết nối Firebase</p>`;
@@ -24,7 +24,7 @@ function paint() {
   const age = typeof state?.lastSeen === 'number' ? Date.now() - state.lastSeen : Infinity;
   const deviceOnline = connected && age >= -60000 && age < 20000;
   $('dot').classList.toggle('live', connected);
-  $('status').textContent = connected ? 'Đã kết nối Firebase' : 'Chưa kết nối Firebase';
+  $('status').textContent = pendingAuthToken !== null ? 'Đang chờ kết nối bằng token mới…' : connected ? 'Đã kết nối Firebase' : 'Chưa kết nối Firebase';
   $('deviceStatus').textContent = deviceOnline ? 'ESP đang online · Đã nhận phản hồi gần đây' : 'ESP chưa phản hồi gần đây · Lệnh sẽ chờ thiết bị';
   cards.forEach((card, i) => {
     const id = i + 1, value = state?.relays?.[id], valid = value === 0 || value === 1;
@@ -53,7 +53,14 @@ async function refresh() {
   if (busy) return;
   busy = true; paint();
   try { await readState(); } catch (error) { connected = false; showError(error); }
-  finally { busy = false; paint(); }
+  finally { finishRequest(); }
+}
+function finishRequest() {
+  busy = false;
+  if (pendingAuthToken !== null) {
+    authToken = pendingAuthToken; pendingAuthToken = null; state = null; connected = false;
+    refresh();
+  } else paint();
 }
 async function writeRelay(id) {
   if (busy || !connected) return;
@@ -62,15 +69,17 @@ async function writeRelay(id) {
   try {
     // Write only this channel, so other channels are never overwritten.
     await request('/relays/' + id, 'PUT', value);
-    await readState();
+    if (pendingAuthToken === null) await readState();
   } catch (error) { connected = false; showError(error); }
-  finally { busy = false; paint(); }
+  finally { finishRequest(); }
 }
 $('retry').onclick = refresh;
 $('authForm').onsubmit = async event => {
-  event.preventDefault(); if (busy) return;
-  authToken = $('token').value.trim(); $('token').value = ''; state = null; connected = false;
-  await refresh();
+  event.preventDefault();
+  // A poll may already be in progress when the user submits credentials.
+  // Finish any write under its original identity, then apply the latest token.
+  pendingAuthToken = $('token').value.trim(); $('token').value = '';
+  if (busy) paint(); else finishRequest();
 };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden) refresh(); }, 2000);

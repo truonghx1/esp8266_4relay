@@ -31,15 +31,24 @@ function createServer({ file = path.join(root, '.simulator', 'config.json') } = 
       if ((req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json')
         throw new ApiError(415, 'Yêu cầu Content-Type: application/json.');
       // Reject browser requests from a different site. No CORS is enabled.
-      if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host)
-        throw new ApiError(403, 'Nguồn yêu cầu không hợp lệ.');
-      let body = '';
+      if (req.headers.origin) {
+        let origin;
+        try { origin = new URL(req.headers.origin).origin; } catch { /* Invalid origins are forbidden too. */ }
+        if (origin !== `http://${req.headers.host}`)
+          throw new ApiError(403, 'Nguồn yêu cầu không hợp lệ.');
+      }
+      const chunks = [];
+      let length = 0;
       for await (const chunk of req) {
-        body += chunk.toString('utf8');
-        if (Buffer.byteLength(body) > 1024) throw new ApiError(413, 'Nội dung quá dài.');
+        length += chunk.length;
+        if (length > 1024) throw new ApiError(413, 'Nội dung quá dài.');
+        chunks.push(chunk);
       }
       let data;
-      try { data = JSON.parse(body); } catch { throw new ApiError(400, 'JSON không hợp lệ.'); }
+      // TCP may split a Vietnamese character between chunks. Decode once after
+      // assembling the bytes, and reject malformed UTF-8 instead of saving U+FFFD.
+      try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, length))); }
+      catch { throw new ApiError(400, 'JSON không hợp lệ.'); }
       if (!data || Array.isArray(data) || typeof data !== 'object') throw new ApiError(400, 'JSON phải là object.');
       respond(res, 200, model.command(route, data));
     } catch (error) {

@@ -1,0 +1,10 @@
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const source = fs.readFileSync('firmware/esp8266_4relay/connectivity.h', 'utf8');
+const start = source.indexOf('void serviceConnectivity()');
+const end = source.indexOf('  if (!wifiWasConnected)', start);
+if (start < 0 || end < 0) throw Error('Cannot locate offline reconnect branch');
+fs.mkdirSync('build', { recursive: true });
+fs.writeFileSync('build/wifi_reconnect_under_test.h', source.slice(start, end) + '}\n');
+execFileSync('g++', ['-std=c++11', '-Wall', '-Wextra', 'tests/wifi_reconnect_test.cpp', '-o', 'build/wifi_reconnect_test.exe'], { stdio: 'inherit' });
+execFileSync('./build/wifi_reconnect_test.exe', [], { stdio: 'inherit' });

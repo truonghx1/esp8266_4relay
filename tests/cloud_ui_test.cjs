@@ -3,11 +3,16 @@ const fs = require('node:fs');
 const { JSDOM } = require('../.tools/ui-test/node_modules/jsdom');
 let state = { relays: { 1: 0, 2: 1, 3: 0, 4: 1 }, reported: { 1: 0, 2: 1, 3: 0, 4: 1 }, lastSeen: Date.now(), names: { 1: '<b>Đèn</b>' } };
 let fail = false;
+let holdNextRead = false, releaseRead;
 const calls = [];
 const dom = new JSDOM(fs.readFileSync('web/index.html', 'utf8').replace('<script defer src="app.js"></script>', ''), {
   runScripts: 'dangerously', url: 'https://example.test/', beforeParse(window) {
     window.fetch = async (url, options) => {
       calls.push({ url, ...options });
+      if (options.method === 'GET' && holdNextRead) {
+        holdNextRead = false;
+        await new Promise(resolve => { releaseRead = resolve; });
+      }
       if (fail) return { ok: false, status: 401 };
       if (options.method === 'PUT') state.relays[Number(url.match(/relays\/(\d)/)[1])] = JSON.parse(options.body);
       return { ok: true, json: async () => structuredClone(state) };
@@ -41,5 +46,21 @@ const document = dom.window.document;
   fail = false; state = null;
   document.getElementById('retry').click(); await settle();
   assert.match(document.querySelector('.value').textContent, /Chưa có dữ liệu/);
+  holdNextRead = true;
+  document.getElementById('retry').click(); await settle();
+  const beforeAuth = calls.length;
+  document.getElementById('token').value = 'new token/?=&';
+  document.getElementById('authForm').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(document.getElementById('token').value, '', 'submitted token should be accepted even while polling');
+  assert.equal(calls.length, beforeAuth, 'credential changes must wait for the active request');
+  releaseRead(); await settle();
+  assert.equal(calls.length, beforeAuth + 1);
+  assert.ok(calls.at(-1).url.endsWith('?auth=' + encodeURIComponent('new token/?=&')));
+  holdNextRead = true;
+  document.getElementById('retry').click(); await settle();
+  document.getElementById('authForm').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  releaseRead(); await settle();
+  assert.equal(calls.at(-1).url.includes('?auth='), false, 'an empty queued token clears previous credentials');
+  console.log('PASS: token submission during active polling, URL encoding and clearing credentials');
   console.log('PASS: Firebase channel 0/1 writes, readback, pending acknowledgement, offline device, permission errors, empty database, escaped names');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());

@@ -7,6 +7,8 @@ const source = fs.readFileSync('firmware/esp8266_4relay/web_ui.h', 'utf8');
 const html = source.match(/R"HTML\(([\s\S]*)\)HTML";/)[1];
 const requests = [];
 let nextError = null;
+let nextResponse;
+let invalidJson = false;
 let state = {
   timeValid: false, epoch: 0, utcOffsetMinutes: 420,
   storageReady: true, configHealthy: true, maxSchedules: 10,
@@ -24,6 +26,8 @@ const dom = new JSDOM(html, {
       const data = options.body ? JSON.parse(options.body) : undefined;
       requests.push({ path, data });
       if (nextError) { const error = nextError; nextError = null; return { ok: false, json: async () => ({ error }) }; }
+      if (invalidJson) { invalidJson = false; return { ok: true, json: async () => { throw new window.SyntaxError('Unexpected end of JSON'); } }; }
+      if (nextResponse !== undefined) { const result = nextResponse; nextResponse = undefined; return { ok: true, json: async () => result }; }
       if (path === '/api/time') { state.timeValid = true; state.epoch = data.epoch; state.utcOffsetMinutes = data.utcOffsetMinutes; }
       if (path === '/api/relay') { const relay = state.relays[data.relay - 1]; relay.on = data.on; relay.manual = true; }
       if (path === '/api/auto') state.relays[data.relay - 1].manual = false;
@@ -171,5 +175,32 @@ const submit = () => $('scheduleForm').dispatchEvent(new window.Event('submit', 
   document.querySelector('[data-page="home"]').click();
   assert.equal($('relaySection').hidden, false);
   assert.equal(document.querySelectorAll('.schedule').length, 10);
+  const relaySwitch = document.querySelector('#relays .switch');
+  relaySwitch.focus();
+  await window.refresh();
+  assert.equal(document.querySelector('#relays .switch'), relaySwitch, 'unchanged polling must keep relay controls and keyboard focus');
+  assert.equal(document.activeElement, relaySwitch);
+  nextError = 'Thiết bị tạm thời không đọc được trạng thái.';
+  await window.refresh();
+  assert.equal($('connection').textContent, 'Mất kết nối');
+  assert.equal(relaySwitch.disabled, true, 'failed polling must not leave stale controls enabled');
+  await window.refresh();
+  assert.equal(relaySwitch.disabled, false);
+  nextResponse = {};
+  await window.refresh();
+  assert.equal($('connection').textContent, 'Mất kết nối');
+  assert.match($('message').textContent, /không hợp lệ/);
+  assert.equal(document.querySelector('#relays .switch'), relaySwitch, 'a malformed response must not replace the last valid state');
+  await window.refresh();
+  nextResponse = null;
+  assert.equal(await window.mutate('/api/relay', { relay: 1, on: true }), false);
+  assert.equal(relaySwitch.disabled, true, 'malformed mutation readback must disable stale state');
+  await window.refresh();
+  invalidJson = true;
+  await window.refresh();
+  assert.equal($('connection').textContent, 'Mất kết nối');
+  await window.refresh();
+  assert.equal($('connection').textContent, 'Đã kết nối');
+  console.log('PASS: stale-state locking, malformed JSON/state recovery, unchanged relay DOM and keyboard focus');
   console.log('PASS: relay switch + on/off, schedule CRUD + menus, clock, validation, capacity, all navigation tabs');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());

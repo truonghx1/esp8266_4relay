@@ -8,6 +8,8 @@ class ApiError extends Error {
 }
 const fail = (status, message) => { throw new ApiError(status, message); };
 const integer = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+// Firmware trims ASCII spaces after validating names, not Unicode whitespace.
+const trimName = name => name.replace(/^ +| +$/g, '');
 function validNames(names) {
   return Array.isArray(names) && names.length === 4 && names.every(name =>
     typeof name === 'string' && name.length > 0 && [...name].length <= 24 &&
@@ -37,11 +39,6 @@ class Simulator {
   constructor(file, now = () => performance.now()) {
     this.file = file;
     this.now = now;
-    this.schedules = [];
-    this.relayNames = [1, 2, 3, 4].map(id => 'Kênh ' + id);
-    this.utcOffsetMinutes = 420;
-    this.configHealthy = true;
-    this.load();
     this.reboot();
   }
   load() {
@@ -54,7 +51,7 @@ class Simulator {
           new Set(data.schedules.map(s => s.id)).size !== data.schedules.length) throw Error('Invalid config');
       if (Object.hasOwn(data, 'relayNames') && !validNames(data.relayNames)) throw Error('Invalid names');
       this.schedules = data.schedules;
-      if (data.relayNames) this.relayNames = data.relayNames.map(name => name.trim());
+      if (data.relayNames) this.relayNames = data.relayNames.map(trimName);
       this.utcOffsetMinutes = data.utcOffsetMinutes;
     } catch { this.configHealthy = false; }
   }
@@ -67,6 +64,11 @@ class Simulator {
     this.configHealthy = true;
   }
   reboot() {
+    this.schedules = [];
+    this.relayNames = [1, 2, 3, 4].map(id => 'Kênh ' + id);
+    this.utcOffsetMinutes = 420;
+    this.configHealthy = true;
+    this.load();
     this.timeValid = false;
     this.baseEpoch = 0;
     this.baseMillis = this.now();
@@ -88,7 +90,10 @@ class Simulator {
   sync(epoch, offset) {
     if (!integer(epoch, 1704067200, 4102444799) || !integer(offset, -720, 840))
       fail(400, 'Giờ phải nằm trong năm 2024–2099, múi giờ UTC−12 đến UTC+14.');
-    if (offset !== this.utcOffsetMinutes) this.save(this.schedules, offset);
+    if (offset !== this.utcOffsetMinutes) {
+      // Match firmware: a storage fault must not prevent a working clock.
+      try { this.save(this.schedules, offset); } catch { this.configHealthy = false; }
+    }
     const first = !this.timeValid;
     this.utcOffsetMinutes = offset;
     this.baseEpoch = epoch;
@@ -112,7 +117,7 @@ class Simulator {
       if (!this.testClock) this.sync(body.epoch, body.utcOffsetMinutes);
     } else if (route === '/api/names') {
       if (!validNames(body.names)) fail(400, 'Nhập đủ 4 tên, mỗi tên 1–24 ký tự, không chứa ký tự điều khiển.');
-      const names = body.names.map(name => name.trim());
+      const names = body.names.map(trimName);
       if (names.some((name, i) => name !== this.relayNames[i])) {
         this.save(this.schedules, this.utcOffsetMinutes, names);
         this.relayNames = names;

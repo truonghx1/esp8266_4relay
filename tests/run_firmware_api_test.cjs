@@ -1,0 +1,12 @@
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
+process.chdir(path.join(__dirname, '..'));
+const source = fs.readFileSync('firmware/esp8266_4relay/esp8266_4relay.ino', 'utf8');
+const start = source.indexOf('void jsonError(');
+const end = source.indexOf('#include "connectivity.h"', start);
+if (start < 0 || end < 0) throw Error('Cannot locate firmware API functions');
+fs.mkdirSync('build', { recursive: true });
+fs.writeFileSync('build/firmware_api_under_test.h', source.slice(start, end));
+execFileSync('g++', ['-std=c++11', '-Wall', '-Wextra', '-pedantic', '-I', '.tools/arduino-user/libraries/ArduinoJson/src', 'tests/firmware_api_test.cpp', '-o', 'build/firmware_api_test.exe'], { stdio: 'inherit' });
+execFileSync('./build/firmware_api_test.exe', [], { stdio: 'inherit' });
