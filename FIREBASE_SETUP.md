@@ -6,7 +6,9 @@ Nạp firmware mới từ `build/firmware/esp8266_4relay.ino.bin` hoặc compile
 
 SSID/mật khẩu được lưu riêng trong LittleFS (`/wifi.json`); cấu trúc lịch và tên thiết bị không đổi. Mật khẩu không được trả về API hoặc đưa lên Firebase. Wi-Fi AP vẫn mở khi ESP kết nối router; radio có thể đổi kênh nên điện thoại có thể phải kết nối lại AP. Đổi mật khẩu AP mặc định trong `config.h` trước khi sử dụng thực tế.
 
-Kết nối thử tối đa 20 giây, thử lại sau 30 giây tính từ đầu lượt trước. Không có Wi-Fi: không gọi Firebase, điều khiển local và lịch vẫn chạy nếu đã có giờ. Có Internet: lấy giờ NTP để xác minh HTTPS và khởi tạo đồng hồ lịch khi cần. Nếu NTP bị chặn, Firebase chờ giờ hợp lệ; tab Cài đặt hiển thị trạng thái này.
+Khởi động ở chế độ AP-only, chờ 30 giây trước khi thử Wi-Fi nhà đã lưu. Kết nối thử tối đa 20 giây; nếu thất bại, tắt riêng STA và giữ AP. Tự thử lại sau ít nhất 30 giây tính từ đầu lượt trước, nhưng hoãn khi có điện thoại đang nối AP local; sau khi điện thoại rời AP, chờ thêm 30 giây. Bấm **Lưu & kết nối** luôn thử ngay. Không có Wi-Fi: không gọi Firebase, điều khiển local và lịch vẫn chạy nếu đã có giờ. Có Internet: lấy giờ NTP để xác minh HTTPS và khởi tạo đồng hồ lịch khi cần. Nếu NTP bị chặn, Firebase chờ giờ hợp lệ; tab Cài đặt hiển thị trạng thái này.
+
+Nếu thấy SSID nhưng không nối được: chọn **Quên mạng**, kết nối lại `ESP8266-4Relay` bằng mật khẩu **12345678** theo `config.h` (không dùng mật khẩu `relay1234` trong tài liệu cũ). Nếu điện thoại báo không có Internet, chọn giữ kết nối. Mở Serial Monitor 115200 baud: kiểm tra `configuration: OK, started: OK`, địa chỉ AP, thông báo `Local Wi-Fi: client joined/disconnected` và lý do reset. Sau khi sửa firmware phải nạp lại board; chỉ sửa `config.h` trên máy không thay đổi mật khẩu của firmware đang chạy.
 
 ## 2. Cấu trúc dữ liệu chung
 

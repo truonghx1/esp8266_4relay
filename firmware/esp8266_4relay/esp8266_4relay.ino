@@ -14,6 +14,7 @@
 
 using namespace relayapp;
 ESP8266WebServer server(80);
+WiFiEventHandler apClientJoined, apClientLeft;
 Schedule schedules[MAX_SCHEDULES];
 String relayNames[RELAY_COUNT] = {"Kênh 1", "Kênh 2", "Kênh 3", "Kênh 4"};
 relayapp::Clock deviceClock;
@@ -302,11 +303,21 @@ void setup() {
   }
   Serial.begin(115200);
   Serial.println();
+  Serial.println(ESP.getResetReason());
   storageReady = LittleFS.begin();
   configHealthy = loadConfig();
   if (!configHealthy) Serial.println(F("Cannot load config; schedules are empty."));
   WiFi.persistent(false);
-  WiFi.mode(WIFI_AP_STA);
+  // Keep the local radio stable until an intentional router connection attempt.
+  WiFi.mode(WIFI_AP);
+  WiFi.setAutoReconnect(false); // Retries are managed by serviceConnectivity().
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  apClientJoined = WiFi.onSoftAPModeStationConnected([](const WiFiEventSoftAPModeStationConnected&) {
+    Serial.println(F("Local Wi-Fi: client joined"));
+  });
+  apClientLeft = WiFi.onSoftAPModeStationDisconnected([](const WiFiEventSoftAPModeStationDisconnected&) {
+    Serial.println(F("Local Wi-Fi: client disconnected"));
+  });
   const IPAddress ip(192, 168, 4, 1);
   const bool configured = WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
   const bool started = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, 4);

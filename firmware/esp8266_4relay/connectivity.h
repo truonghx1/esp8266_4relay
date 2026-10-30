@@ -16,6 +16,8 @@ class FirebaseBody : public Stream {
 
 // Included after the existing local API helpers; schedules/config keep their format.
 void beginWifi() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(false);
   WiFi.disconnect(false);
   WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
   wifiAttemptAt = millis();
@@ -34,7 +36,13 @@ void loadWifi() {
   if (!doc["ssid"].is<String>() || !doc["password"].is<String>()) return;
   wifiSsid = doc["ssid"].as<String>();
   wifiPassword = doc["password"].as<String>();
-  if (wifiSsid.length() && wifiSsid.length() <= 32 && wifiPassword.length() <= 63) beginWifi();
+  if (wifiSsid.length() && wifiSsid.length() <= 32 && wifiPassword.length() <= 63) {
+    // Leave a stable AP-only window after boot, including with stale credentials.
+    wifiAttemptAt = millis();
+    wifiStatus = "Chờ kết nối Wi-Fi nhà; ưu tiên truy cập local";
+  } else {
+    wifiSsid = ""; wifiPassword = "";
+  }
 }
 
 void handleWifi() {
@@ -153,13 +161,21 @@ void syncFirebase() {
 void serviceConnectivity() {
   const uint32_t now = millis();
   if (WiFi.status() != WL_CONNECTED) {
-    if (wifiWasConnected) { wifiWasConnected = false; cloudDirty = 0; wifiAttemptAt = now; }
+    if (wifiWasConnected) {
+      wifiWasConnected = false; cloudDirty = 0; wifiAttemptAt = now;
+      WiFi.disconnect(true); // Disable STA only; keep the local AP available.
+    }
     firebaseStatus = "Chưa kết nối Wi-Fi — chỉ dùng local";
     if (wifiConnecting && now - wifiAttemptAt >= 20000) {
-      wifiConnecting = false; WiFi.disconnect(false);
+      wifiConnecting = false; WiFi.disconnect(true);
       wifiStatus = "Không kết nối được; kiểm tra SSID/mật khẩu. Sẽ thử lại.";
     } else if (!wifiConnecting && wifiSsid.length()) {
-      if (now - wifiAttemptAt >= 30000) beginWifi();
+      // Do not scan/change channels underneath a phone using the local AP.
+      // Explicit submission of /api/wifi still connects immediately.
+      if (WiFi.softAPgetStationNum() > 0) {
+        wifiAttemptAt = now;
+        wifiStatus = "Đang dùng local; kết nối Wi-Fi nhà khi lưu hoặc rời AP";
+      } else if (now - wifiAttemptAt >= 30000) beginWifi();
       else if (wifiStatus == "Đã kết nối") wifiStatus = "Mất Wi-Fi; đang chờ thử lại";
     }
     return;
