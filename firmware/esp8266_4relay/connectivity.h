@@ -1,15 +1,37 @@
 #pragma once
 #include "firebase_body.h"
 #include "firebase_relays.h"
+#include <memory>
+#include <new>
 
 bool wifiStartPending = false;
 uint32_t wifiStartQueuedAt = 0;
 String lastFirebaseReport;
 uint32_t lastFirebaseReportAt = 0;
+// Only trivial/empty initialization here. Never parse certificates inside a
+// function-local static: ESP8266's __cxa_guard_acquire disables interrupts.
+std::unique_ptr<BearSSL::X509List> firebaseRoots;
+BearSSL::Session firebaseSession;
 
 void connectivityTrace(const char* stage) {
   Serial.printf("[net] %s; heap=%u; stack=%u\n", stage,
                 ESP.getFreeHeap(), ESP.getFreeContStack());
+}
+
+bool prepareFirebaseTls() {
+  if (firebaseRoots) return true;
+  connectivityTrace("TLS roots parse begin");
+  yield();
+  std::unique_ptr<BearSSL::X509List> candidate(new (std::nothrow) BearSSL::X509List());
+  if (!candidate || !candidate->append(FIREBASE_CA)) {
+    firebaseStatus = "Không đủ bộ nhớ để đọc chứng chỉ TLS";
+    connectivityTrace("TLS roots parse failed");
+    return false;
+  }
+  firebaseRoots = std::move(candidate);
+  yield();
+  connectivityTrace("TLS roots ready");
+  return true;
 }
 
 // Included after the existing local API helpers; schedules/config keep their format.
@@ -85,13 +107,11 @@ void handleWifi() {
 
 int firebaseRequest(const String& path, const char* method, const String& body,
                     String& response, bool createOnly = false) {
-  // Parse roots once and let successive requests resume TLS sessions when supported.
-  static BearSSL::X509List roots(FIREBASE_CA);
-  static BearSSL::Session session;
+  if (!firebaseRoots) return HTTPC_ERROR_TOO_LESS_RAM;
   // Trust anchors must outlive the TLS client, including its destructor.
   BearSSL::WiFiClientSecure client;
-  client.setTrustAnchors(&roots);
-  client.setSession(&session);
+  client.setTrustAnchors(firebaseRoots.get());
+  client.setSession(&firebaseSession);
   client.setTimeout(2500);
   HTTPClient http;
   String url = String(DATABASE_URL) + DEVICE_PATH + path + ".json";
@@ -238,6 +258,13 @@ void serviceConnectivity() {
   if (epoch < 1704067200) { firebaseStatus = "Đang chờ giờ Internet để xác minh TLS"; return; }
   if (!deviceClock.valid()) { deviceClock.sync(static_cast<uint64_t>(epoch), now); updateRelays(true); }
   if (now - cloudAttemptAt < FIREBASE_POLL_MS) return;
+  if (!firebaseRoots) {
+    // Parse outside HTTP/JSON call frames, with interrupts enabled. Always give
+    // the local server a separate loop iteration before opening a TLS socket.
+    prepareFirebaseTls();
+    cloudAttemptAt = millis();
+    return;
+  }
   syncFirebase();
   cloudAttemptAt = millis();
 }

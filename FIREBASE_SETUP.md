@@ -58,6 +58,8 @@ Hoặc dùng Vercel CLI tại thư mục gốc: `vercel`, rồi `vercel --prod` 
 
 ## Kiểm tra
 
+Sửa lỗi restart ở bản tối ưu TLS: không dùng `static X509List(FIREBASE_CA)` trong hàm. ESP8266 Core 3.1.2 khóa ngắt bằng `__cxa_guard_acquire` suốt constructor của static cục bộ; parse chứng chỉ ở đó có thể gây watchdog. Firmware chuẩn bị chứng chỉ một lần bằng `prepareFirebaseTls()` với ngắt hoạt động, rồi trả về loop trước khi mở HTTPS. Serial phải có `[net] TLS roots parse begin` và `[net] TLS roots ready`. Test `node tests/tls_init_test.cjs` kiểm tra binary đã compile để ngăn đưa lại static initializer này.
+
 Đã sửa lỗi chiều web → ESP: `FirebaseBody` phải khai báo `availableForWrite()` cho HTTPClient của ESP8266. Nếu thiếu, HTTP có thể trả 200 nhưng bộ nhận chờ timeout, JSON rỗng và lệnh không được áp dụng. Bản mới nhận theo block, giới hạn 4096 byte, trả lỗi khi đọc body thất bại thay vì coi HTTP 200 là thành công. Serial hiển thị method, đường dẫn, số byte và `Applied web relay N = 0/1` khi áp dụng một giá trị khác đầu ra hiện tại.
 
 Test C++ dùng chính bộ nhận, parser Firebase và logic relay của firmware, kiểm tra object/array, local ON → web OFF, dữ liệu sai, giới hạn bộ nhớ và hết heap. Chạy với GCC cùng thư viện ArduinoJson 6 đã cài:
